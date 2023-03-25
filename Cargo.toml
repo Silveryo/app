@@ -1,0 +1,16 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+csv = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+rust-stemmers = "^1.0"
+unicode-normalization = "0.1.22"
+
+[[bin]]
+name = "app"
+path = "main.rs"

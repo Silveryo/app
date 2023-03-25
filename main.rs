@@ -7,6 +7,7 @@ use crate::structs::PreprocessedReview;
 
 mod preprocess;
 mod structs;
+mod tf_idf;
 
 extern crate csv;
 extern crate serde;

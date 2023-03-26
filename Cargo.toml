@@ -11,6 +11,7 @@ serde = { version = "1.0", features = ["derive"] }
 rust-stemmers = "^1.0"
 unicode-normalization = "0.1.22"
 rayon = "1.7.0"
+crossbeam = "0.8"
 
 [[bin]]
 name = "app"

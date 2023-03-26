@@ -1,7 +1,9 @@
+use crossbeam::channel;
 use rayon::prelude::*;
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, error::Error, fs::File, io::Read};
+use tf_idf::calculate_tfidf;
 
 use crate::structs::PreprocessedReview;
 
@@ -13,6 +15,101 @@ extern crate csv;
 extern crate serde;
 
 fn main() {
+    print!("Hello world...");
+}
+
+fn get_tfidf() {
+    let num_rows = 5;
+    let dictionary_file_path = "bag_of_words.csv";
+    let reviews_file_path = "preprocessed_data.csv";
+
+    println!("Loading dictionary...");
+    let dictionary = load_dictionary(dictionary_file_path).unwrap();
+    println!("Loading preprocessed reviews...");
+    let preprocessed_reviews = load_csv(reviews_file_path).unwrap();
+
+    let stdout_mutex = Arc::new(Mutex::new(io::stdout()));
+
+    println!("Converting reviews to vectors...");
+    let review_vectors: Vec<Vec<u32>> = preprocessed_reviews
+        .par_iter()
+        .map(|review| {
+            let mut stdout = stdout_mutex.lock().unwrap();
+            writeln!(
+                stdout,
+                "Converting review to vector: {}",
+                review.review_text
+            )
+            .unwrap();
+            drop(stdout);
+
+            let mut review_vector: Vec<u32> = vec![0; dictionary.len()];
+            let words = review.review_text.split_whitespace();
+            for word in words {
+                if let Some(index) = dictionary.iter().position(|w| w == word) {
+                    review_vector[index] += 1;
+                }
+            }
+            review_vector
+        })
+        .collect();
+
+    let filtered_dictionary = dictionary;
+    let filtered_review_vectors = review_vectors;
+
+    println!("Calculating tf-idf...");
+    let tfidf_vectors = calculate_tfidf(&filtered_review_vectors);
+
+    println!("Writing tf-idf output to file...");
+    let output_file_path = "tfidf_output.csv";
+    let output_file = std::fs::File::create(output_file_path).expect("Unable to create file");
+
+    let stdout_mutex = Arc::new(Mutex::new(io::stdout()));
+
+    crossbeam::scope(|s| {
+        let (tx, rx) = channel::bounded(tfidf_vectors.len());
+
+        tfidf_vectors
+            .par_iter()
+            .enumerate()
+            .for_each_with(tx, |tx, (i, tfidf_vector)| {
+                let mut buf = String::new();
+                buf.push_str(&format!("Review {}\n", i));
+
+                for (j, tfidf_value) in tfidf_vector.iter().enumerate() {
+                    buf.push_str(&format!("{},{}\n", filtered_dictionary[j], tfidf_value));
+                }
+
+                buf.push('\n');
+                tx.send((i, buf)).expect("Unable to send data");
+
+                let mut stdout = stdout_mutex.lock().unwrap();
+                writeln!(
+                    stdout,
+                    "Writing tf-idf for review {}... ({}%)",
+                    i,
+                    (i as f64 / tfidf_vectors.len() as f64) * 100.0
+                )
+                .unwrap();
+                drop(stdout);
+            });
+
+        let mut output_file = BufWriter::new(output_file);
+        let mut collected_data: Vec<(usize, String)> = rx.iter().collect();
+        collected_data.sort_by_key(|x| x.0);
+
+        for (_, data) in collected_data.into_iter() {
+            output_file
+                .write_all(data.as_bytes())
+                .expect("Unable to write data");
+        }
+    })
+    .unwrap();
+
+    println!("Tf-idf output saved to {}", output_file_path);
+}
+
+fn get_bag_of_words() {
     let num_rows = 20000;
     let (dictionary, review_vectors) = bag_of_words(num_rows);
 
@@ -100,6 +197,46 @@ fn map_dictionary_to_review_vectors(
         .cloned()
         .zip(combined_counts.into_iter())
         .collect()
+}
+
+fn filter_top_n_words(
+    dictionary: &Vec<String>,
+    review_vectors: &Vec<Vec<u32>>,
+    n: usize,
+) -> (Vec<String>, Vec<Vec<u32>>) {
+    let mut indices: Vec<usize> = (0..dictionary.len()).collect();
+    indices
+        .sort_by_key(|&i| std::cmp::Reverse(review_vectors.par_iter().map(|v| v[i]).sum::<u32>()));
+    println!("Finished sorting indices.");
+
+    indices.truncate(n);
+    println!("Finished truncating indices.");
+
+    let new_dictionary: Vec<String> = indices.par_iter().map(|&i| dictionary[i].clone()).collect();
+    println!("Finished creating new dictionary.");
+
+    let new_review_vectors: Vec<Vec<u32>> = review_vectors
+        .par_iter()
+        .map(|review_vector| indices.par_iter().map(|&i| review_vector[i]).collect())
+        .collect();
+
+    (new_dictionary, new_review_vectors)
+}
+
+fn load_dictionary(file_path: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+    let mut dictionary = Vec::new();
+
+    for line in reader.lines().skip(1) {
+        let line = line?;
+        let columns: Vec<&str> = line.split(',').collect();
+        if columns.len() == 2 {
+            dictionary.push(columns[1].to_string());
+        }
+    }
+
+    Ok(dictionary)
 }
 
 fn load_csv(file_path: &str) -> Result<Vec<PreprocessedReview>, Box<dyn Error>> {
